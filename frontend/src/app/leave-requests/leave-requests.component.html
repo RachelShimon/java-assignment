@@ -1,5 +1,60 @@
 <h2>Leave Requests</h2>
 
+<form class="request-form" [formGroup]="form" (ngSubmit)="onSubmit()">
+  <h3>New Request</h3>
+
+  <div class="field">
+    <label for="employeeId">Employee</label>
+    <select id="employeeId" formControlName="employeeId">
+      <option [ngValue]="null" disabled>Select employee</option>
+      <option *ngFor="let e of employees" [ngValue]="e.id">{{ e.name }}</option>
+    </select>
+    <div class="error" *ngIf="form.controls.employeeId.touched && form.controls.employeeId.invalid">
+      Please select an employee.
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="type">Leave type</label>
+    <select id="type" formControlName="type">
+      <option [ngValue]="null" disabled>Select type</option>
+      <option *ngFor="let t of leaveTypeOptions" [ngValue]="t.value">{{ t.label }}</option>
+    </select>
+    <div class="error" *ngIf="form.controls.type.touched && form.controls.type.invalid">
+      Please select a leave type.
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="startDate">Start date</label>
+    <input id="startDate" type="date" formControlName="startDate" />
+    <div class="error" *ngIf="form.controls.startDate.touched && form.controls.startDate.invalid">
+      Please pick a start date.
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="endDate">End date</label>
+    <input id="endDate" type="date" formControlName="endDate" />
+    <div class="error" *ngIf="form.controls.endDate.touched && form.controls.endDate.invalid">
+      Please pick an end date.
+    </div>
+  </div>
+
+  <div class="error" *ngIf="form.errors?.['dateRange'] && form.controls.endDate.touched">
+    The start date must not be after the end date.
+  </div>
+
+  <div class="hint" *ngIf="requestedDays !== null">{{ requestedDays }} day(s) requested.</div>
+
+  <button type="submit" [disabled]="submitting">
+    {{ submitting ? 'Submitting…' : 'Submit request' }}
+  </button>
+
+  <div class="error" *ngIf="submitError">{{ submitError }}</div>
+  <div class="success" *ngIf="submitSuccess">{{ submitSuccess }}</div>
+</form>
+
 <div *ngIf="loading">Loading...</div>
 <div class="error" *ngIf="loadError">{{ loadError }}</div>
 
