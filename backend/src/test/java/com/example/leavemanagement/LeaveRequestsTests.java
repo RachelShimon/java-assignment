@@ -150,6 +150,27 @@ class LeaveRequestsTests {
                 .andExpect(status().isNotFound());
     }
 
+    @Test
+    void create_EndDateBeforeStartDate_IsRejected() throws Exception {
+        Employee emp = employeeWithQuota(20);
+        long before = leaveRequests.count();
+
+        postCreate(createBody(emp.getId(), LeaveType.VACATION, "2026-03-10", "2026-03-05"))
+                .andExpect(status().isBadRequest());
+
+        assertEquals(before, leaveRequests.count());
+    }
+
+    @Test
+    void create_MissingType_IsRejected() throws Exception {
+        Employee emp = employeeWithQuota(20);
+
+        postCreate("""
+                {"employeeId": %d, "startDate": "2026-03-01", "endDate": "2026-03-03"}
+                """.formatted(emp.getId()))
+                .andExpect(status().isBadRequest());
+    }
+
     // --- search ---
 
     @Test
