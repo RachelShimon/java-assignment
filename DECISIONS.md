@@ -3,40 +3,47 @@
 # DECISIONS
 
 ## 1. החלטות ארכיטקטוניות
-- **Backend — הפרדת שכבות:** Controller (HTTP בלבד) ← Service (לוגיקה עסקית + `@Transactional`) ← Repository. חריגות דומיין (`NotFound/BadRequest/Conflict`) ממופות לקודי HTTP ב‑`GlobalExceptionHandler` אחד, כך שה‑controllers לא עוסקים בשגיאות.
-- **בכוונה לא הוספתי:** mappers, ‏response DTOs ו‑interfaces ל‑services — בהיקף הזה זה over‑engineering. ה‑entities מוחזרים ישירות (עם `@JsonIgnoreProperties` הקיים לשבירת המעגליות); זה ויתור מתועד בסעיף 4.
-- **Frontend:** שכבת services‏ (`LeaveRequestService`, `EmployeeService`), מודלים מטופסים עם enums שמשקפים את הסריאליזציה המספרית של ה‑backend, Reactive Form, ו‑`takeUntilDestroyed` לכל subscription — בלי memory leaks ובלי `any`.
+- **הפרדת שכבות (Backend):** Controller (HTTP בלבד) ← Service (לוגיקה עסקית + גבול `@Transactional`) ← Repository. הוצאתי את הלוגיקה והגישה ל-DB מה-Controller כדי שניתן יהיה לבדוק את הלוגיקה העסקית ללא תלות בשכבת ה-HTTP, וכדי שלכל פעולה יהיה גבול טרנזקציה אחד וברור.
+- **טיפול מרכזי בשגיאות:** חריגות דומיין (`NotFound/BadRequest/Conflict`) ממופות לקודי HTTP ב-`GlobalExceptionHandler` יחיד, עם body אחיד `{"message": ...}`. כך ה-Controllers אינם עוסקים כלל בטיפול בשגיאות.
+- **`open-in-view: false`:** כבר היה כבוי ב-POC המקורי והשארתי אותו כך במכוון, כדי למנוע שאילתות lazy בלתי צפויות בשכבת ה-view ולוודא שכל הגישה ל-DB תתבצע במסגרת הטרנזקציה של ה-Service.
+- **בכוונה לא הוספתי** mappers, response DTOs או interfaces ל-services — בהיקף הזה זה over-engineering. ה-entities מוחזרים ישירות (עם `@JsonIgnoreProperties` הקיים למניעת מעגליות בסריאליזציה). זה ויתור מתועד בסעיף 4.
+- **Frontend:** שכבת services (`LeaveRequestService`, `EmployeeService`), מודלים מטופסים עם enums שמשקפים את הסריאליזציה המספרית של ה-backend, Reactive Form עם cross-field validation, ו-`takeUntilDestroyed` לכל subscription — בלי memory leaks ובלי `any`.
 
 ## 2. הבאג ביתרת החופשה
-- **מה ואיפה:** ב‑`create` חושבו הימים שכבר אושרו (`used`) אבל תנאי המכסה בדק רק `days > annualQuota` — כלומר כל בקשה שקטנה מהמכסה המלאה עברה, גם אם העובד כבר ניצל כמעט הכול.
-- **תיקון:** `used + days > annualQuota` (כיום ב‑`LeaveRequestService.create`).
+- **מה ואיפה:** ב-`create` חושבו הימים שכבר אושרו (`used`) אבל תנאי המכסה בדק רק `days > annualQuota` — כלומר כל בקשה שקטנה מהמכסה המלאה עברה, גם אם העובד כבר ניצל כמעט הכול.
+- **תיקון:** `used + days > annualQuota` (כיום ב-`LeaveRequestService.create`).
 - **טסטים:** `create_ExceedingRemainingQuota_IsRejected` (18/20 מנוצלים + בקשת 5 ימים → 400), ובדיקת גבול `create_ExactlyRemainingQuota_Succeeds` (בדיוק היתרה → מאושר).
 
-## 3. אישור בקשה (approve) ו‑concurrency
-- בקשה לא קיימת → **404**; בקשה שכבר אושרה/נדחתה → **409**; אישור שיחרוג מהמכסה → **409** והבקשה נשארת PENDING.
+## 3. אישור בקשה (approve) ו-concurrency
+- **קודי שגיאה:** בקשה לא קיימת → **404**; בקשה שכבר אושרה/נדחתה → **409**; אישור שיחרוג מהמכסה → **409** והבקשה נשארת PENDING. בחרתי `409 Conflict` (ולא `422`) כי הכשל נובע ממצב השרת שהשתנה בינתיים — בקשה שהייתה חוקית בזמן ההגשה ונעשתה לא-חוקית בגלל ימים שנוצלו מאז — ולא מ-payload שגוי.
 - **מקביליות:** נעילה פסימית (`SELECT … FOR UPDATE`) בתוך הטרנזקציה — על שורת הבקשה (מונעת אישור כפול של אותה בקשה) ועל שורת העובד (שני אישורים לאותו עובד רצים בטור, כך שהשני רואה את הימים של הראשון ולא חורגים יחד מהמכסה). סדר נעילה קבוע (בקשה ← עובד) מונע deadlock.
-- **טסט:** `approve_ConcurrentApprovals_CannotJointlyExceedQuota` — שני threads מאשרים במקביל שתי בקשות שכל אחת לבדה חוקית אך יחד חורגות; בדיוק אחת מצליחה (מול PostgreSQL אמיתי ב‑Testcontainers).
+- **מדוע זה עובד (isolation):** תחת READ_COMMITTED של PostgreSQL, ה-thread השני ממתין לנעילה על שורת העובד עד שה-thread הראשון מבצע commit, ואז קורא מחדש את סך הימים המאושרים כולל השורה החדשה — ולכן מזהה את החריגה. בדיוק אחד מצליח.
+- **הערה על `create`:** הבדיקה ב-`create` היא בדיקת קדם בלבד (בקשת PENDING לא נספרת ביתרה — ראו סעיף 4); האכיפה המחייבת מתבצעת ב-`approve` תחת נעילה. זה מונע מצב שבו עובד מגיש בקשה שלעולם לא תוכל להיות מאושרת.
+- **טסט:** `approve_ConcurrentApprovals_CannotJointlyExceedQuota` — שני threads מאשרים במקביל שתי בקשות שכל אחת לבדה חוקית אך יחד חורגות; בדיוק אחת מצליחה.
+- **מדוע Testcontainers ולא H2:** טסט המקביליות מסתמך על סמנטיקת נעילות שורה אמיתית של PostgreSQL. מול מסד נתונים בזיכרון כמו H2 הטסט לא היה מאמת שהנעילה אכן מבטיחה את ההתנהגות הנדרשת בתרחיש המקבילי — לכן הרצתי את הטסט מול PostgreSQL אמיתי בקונטיינר חד-פעמי.
 - **חלופה שנשקלה:** optimistic locking עם `@Version` — נדחתה כי הקונפליקט כאן הוא על ערך נגזר (סכום ימים של כמה שורות), לא על עדכון שורה בודדת.
 
 ## 4. על מה ויתרתי בגלל הזמן
-- **Response DTOs** — מוחזרות entities; עם עוד יום הייתי מוסיפה DTO ייעודי ומנתקת את ה‑API מהמודל.
-- **תחימת המכסה לשנה קלנדרית** — כמו ב‑POC, כל הבקשות המאושרות נספרות ללא תלות בשנה. הייתי תוחמת לשנה ומטפלת בבקשות חוצות‑שנים.
-- **בקשות PENDING לא נספרות ביתרה בעת הגשה** — האכיפה הסופית היא ב‑approve (שם זה נעול ועקבי), אבל אפשר להחמיר כבר בהגשה.
-- עוד: endpoint לדחייה, עימוד, אימות/הרשאות, כתובת API מבוססת environment בפרונט, בדיקות E2E.
+- **Response DTOs** — מוחזרות entities; אילו עמד לרשותי יום נוסף, הייתי מוסיפה DTO ייעודי ומנתקת את ה-API מהמודל.
+- **ספירת PENDING ביתרה** — כרגע בקשות PENDING לא נספרות בעת ההגשה; האכיפה הסופית היא ב-`approve` (שם מתבצעת האכיפה תחת נעילה). אפשר להחמיר כבר בהגשה אם רוצים חסימה מוקדמת של "over-booking".
+- **תחימת המכסה לשנה קלנדרית** — כמו ב-POC, כל הבקשות המאושרות נספרות ללא תלות בשנה. הייתי תוחמת לשנה ומטפלת בבקשות חוצות-שנים.
+- **שיפור הטיפול ב-concurrency** — אילו עמד לרשותי זמן נוסף, הייתי מוסיפה `lock_timeout` + retry מבוקר כדי ש-thread שממתין לנעילה לא ימתין ללא הגבלת זמן, ושוקלת `SKIP LOCKED` לזרימות batch.
+- **עוד:** endpoint לדחייה, עימוד, אימות והרשאות, כתובת API המבוססת על משתני סביבה בפרונט, בדיקות E2E.
 
-## 5. שימוש ב‑AI
+## 5. שימוש ב-AI
 ### איפה AI עזר (כולל prompts)
-1. prompt: *"קרא את create ב‑LeaveRequestsController והסבר איך עובד יכול לחרוג מהמכסה השנתית"* → הצביע על כך ש‑`used` מחושב אך לא משתתף בתנאי. אימתתי מול הקוד וכתבתי קודם טסט רגרסיה שנכשל, ורק אז תיקנתי.
-2. prompt: *"כתוב טסט JUnit שמריץ שני approve במקביל עם CyclicBarrier ו‑ExecutorService ומוודא שבדיוק אחד מצליח"* → קיבלתי שלד טוב; התאמתי אותו לקרוא לשירות ולאמת גם את סך הימים המאושרים ב‑DB.
-3. debug סביבה: `mvn test` נכשל עם "Could not find a valid Docker environment" למרות ש‑Docker רץ. AI שיער שה‑docker-java שבתוך Testcontainers פונה ב‑API v1.32 ש‑Docker Engine 29 כבר לא תומך בו; אימתנו עם `curl` ‏(`/v1.32/info` ‏→ 400, ‏`/v1.44/info` ‏→ 200) והפתרון — קיבוע `api.version=1.44` ב‑surefire.
+1. prompt: *"קרא את create ב-LeaveRequestsController והסבר איך עובד יכול לחרוג מהמכסה השנתית"* → הצביע על כך ש-`used` מחושב אך לא משתתף בתנאי. אימתתי מול הקוד וכתבתי קודם טסט רגרסיה שנכשל, ורק אז תיקנתי.
+2. prompt: *"כתוב טסט JUnit שמריץ שני approve במקביל עם CyclicBarrier ו-ExecutorService ומוודא שבדיוק אחד מצליח"* → קיבלתי שלד טוב; התאמתי אותו לקרוא לשירות ולאמת גם את סך הימים המאושרים ב-DB.
+3. איתור תקלת סביבה: `mvn test` נכשל עם "Could not find a valid Docker environment" למרות ש-Docker רץ. ה-AI הציע שהבעיה נובעת מכך שה-docker-java שבתוך Testcontainers פונה ב-API v1.32 ש-Docker Engine 29 כבר לא תומך בו; אימתתי עם `curl` (`/v1.32/info` → 400, `/v1.44/info` → 200) והפתרון — הגדרת `api.version=1.44` ב-surefire.
 
 ### איפה דחיתי/תיקנתי הצעה של AI
-- הוצע להחליף `@Enumerated(ORDINAL)` ב‑`STRING` "כי זה עמיד יותר לשינוי סדר". דחיתי: זה שובר את הנתונים הקיימים ב‑DB (עמודות מספריות) ואת החוזה מול ה‑Angular client שעובד עם קודים מספריים. השינוי הנכון דורש מיגרציה מתואמת של DB ו‑client — לא במסגרת הזמן הזו.
+- הוצע להחליף `@Enumerated(ORDINAL)` ב-`STRING` "כי זה עמיד יותר לשינוי סדר". דחיתי: זה שובר את הנתונים הקיימים ב-DB (עמודות מספריות) ואת החוזה מול ה-client של Angular שעובד עם קודים מספריים. השינוי הנכון דורש מיגרציה מתואמת של DB ו-client — לא במסגרת הזמן הזו.
 
 ### אבטחה
-- **SQL Injection** ב‑`GET /api/leave-requests/search` ‏(`LeaveRequestsController`, השאילתה ה‑native המקורית): שם העובד שורשר ישירות לתוך SQL — קלט כמו `' OR '1'='1` חילץ את כל הרשומות, ואפשר היה להרחיב לחילוץ נתונים שרירותי. **תוקן** לשאילתה נגזרת של Spring Data עם פרמטרים קשורים, כולל טסט (`search_SqlInjectionPayload_ReturnsNoRowsInsteadOfLeakingAll`).
+- **SQL Injection** ב-`GET /api/leave-requests/search` (במקור ב-`LeaveRequestsController`, השאילתה ה-native): שם העובד שורשר ישירות ל-SQL, כך שקלט כמו `' OR '1'='1` היה עלול להחזיר את כל הרשומות (ואף לאפשר חילוץ נתונים שרירותי). **תוקן** לשאילתת Spring Data נגזרת עם פרמטרים קשורים, כולל טסט (`search_SqlInjectionPayload_ReturnsNoRowsInsteadOfLeakingAll`).
+- **מעבר ל-SQLi — מה עוד נבדק ונמצא תקין:** שאר השאילתות מבוססות על Derived Queries עם פרמטרים קשורים; CORS מוגבל ל-`localhost:4200` בלבד; אין סודות בריפו (פרטי ה-DB ב-compose הם לפיתוח מקומי בלבד). Auth/authorization לא בהיקף הזה ומתועד כוויתור בסעיף 4.
 
 ## 6. הוראות הרצה
-- ללא שינוי מה‑README. הערה אחת: ב‑Docker Engine ‏29+ נדרש קיבוע `api.version` ל‑docker-java — כבר מוגדר ב‑`pom.xml` (surefire), כך ש‑`mvn test` עובד כרגיל.
+- ללא שינוי מה-README. הערה אחת: ב-Docker Engine 29+ נדרשת הגדרת `api.version` ל-docker-java — כבר מוגדר ב-`pom.xml` (surefire), כך ש-`mvn test` עובד כרגיל. הדרישה המעשית: Docker Engine ≥ 25 (שתומך ב-API 1.44).
 
 </div>
