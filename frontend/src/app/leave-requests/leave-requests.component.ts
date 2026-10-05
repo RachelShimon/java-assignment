@@ -164,6 +164,10 @@ export class LeaveRequestsComponent implements OnInit {
     return this.approvingIds.has(id);
   }
 
+  trackById(_index: number, request: LeaveRequest): number {
+    return request.id;
+  }
+
   typeLabel(type: LeaveType): string {
     return this.typeLabels[type] ?? 'Unknown';
   }
