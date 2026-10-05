@@ -270,6 +270,31 @@ class LeaveRequestsTests {
         assertEquals(6, approvedDays, "approved days must not exceed the quota");
     }
 
+    // Double-approving the same request concurrently: the request-row lock makes
+    // the second transaction wait, re-read APPROVED and fail the PENDING check.
+    @Test
+    void approve_SameRequestConcurrently_SucceedsExactlyOnce() throws Exception {
+        Employee emp = employeeWithQuota(20);
+        LeaveRequest r = vacation(emp, LocalDate.of(2026, 7, 1), 3, LeaveStatus.PENDING);
+
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Boolean>> results = pool.invokeAll(List.of(
+                    () -> tryApprove(r.getId(), barrier),
+                    () -> tryApprove(r.getId(), barrier)));
+            long successes = 0;
+            for (Future<Boolean> f : results) {
+                if (f.get()) successes++;
+            }
+            assertEquals(1, successes, "double-approving the same request must succeed exactly once");
+        } finally {
+            pool.shutdown();
+        }
+
+        assertEquals(LeaveStatus.APPROVED, leaveRequests.findById(r.getId()).orElseThrow().getStatus());
+    }
+
     private boolean tryApprove(Long requestId, CyclicBarrier barrier) throws Exception {
         barrier.await();
         try {
