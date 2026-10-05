@@ -56,6 +56,10 @@ export class LeaveRequestsComponent implements OnInit {
   submitError = '';
   submitSuccess = '';
 
+  approvingIds = new Set<number>();
+  approveError = '';
+  approveSuccess = '';
+
   // Exposed for template comparisons.
   readonly LeaveStatus = LeaveStatus;
 
@@ -132,10 +136,32 @@ export class LeaveRequestsComponent implements OnInit {
   }
 
   approve(request: LeaveRequest): void {
-    // Upgraded as part of the assignment (loading / error / success handling).
+    if (this.approvingIds.has(request.id)) return;
+
+    this.approvingIds.add(request.id);
+    this.approveError = '';
+    this.approveSuccess = '';
+
     this.leaveRequestService.approve(request.id)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe(() => this.load());
+      .pipe(takeUntilDestroyed(this.destroyRef), finalize(() => this.approvingIds.delete(request.id)))
+      .subscribe({
+        next: (updated) => {
+          // Update only the affected row; no full reload.
+          this.requests = this.requests.map((r) =>
+            r.id === updated.id ? { ...updated, employee: updated.employee ?? r.employee } : r
+          );
+          this.approveSuccess = `Request #${updated.id} approved.`;
+        },
+        error: (err: HttpErrorResponse) => {
+          this.approveError = (err.error as ApiError)?.message ?? 'Approval failed.';
+          // On a state conflict (e.g. approved elsewhere) resync the list.
+          if (err.status === 409) this.load();
+        }
+      });
+  }
+
+  isApproving(id: number): boolean {
+    return this.approvingIds.has(id);
   }
 
   typeLabel(type: LeaveType): string {

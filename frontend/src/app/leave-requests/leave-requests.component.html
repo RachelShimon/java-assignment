@@ -57,6 +57,8 @@
 
 <div *ngIf="loading">Loading...</div>
 <div class="error" *ngIf="loadError">{{ loadError }}</div>
+<div class="error" *ngIf="approveError">{{ approveError }}</div>
+<div class="success" *ngIf="approveSuccess">{{ approveSuccess }}</div>
 
 <table *ngIf="!loading && !loadError">
   <thead>
@@ -81,7 +83,12 @@
       <td>{{ r.days }}</td>
       <td>{{ statusLabel(r.status) }}</td>
       <td>
-        <button *ngIf="r.status === LeaveStatus.Pending" (click)="approve(r)">Approve</button>
+        <button
+          *ngIf="r.status === LeaveStatus.Pending"
+          [disabled]="isApproving(r.id)"
+          (click)="approve(r)">
+          {{ isApproving(r.id) ? 'Approving…' : 'Approve' }}
+        </button>
       </td>
     </tr>
   </tbody>
