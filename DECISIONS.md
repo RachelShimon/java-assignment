@@ -4,7 +4,7 @@
 
 ## 1. החלטות ארכיטקטוניות
 - **Backend — הפרדת שכבות:** Controller (HTTP בלבד) ← Service (לוגיקה עסקית + `@Transactional`) ← Repository. חריגות דומיין (`NotFound/BadRequest/Conflict`) ממופות לקודי HTTP ב‑`GlobalExceptionHandler` אחד, כך שה‑controllers לא עוסקים בשגיאות.
-- **בכוונה לא הוספתי:** mappers, ‏response DTOs ו‑interfaces לשירותים — בהיקף הזה זה over‑engineering. ה‑entities מוחזרים ישירות (עם `@JsonIgnoreProperties` הקיים לשבירת המעגליות); זה ויתור מתועד בסעיף 4.
+- **בכוונה לא הוספתי:** mappers, ‏response DTOs ו‑interfaces ל‑services — בהיקף הזה זה over‑engineering. ה‑entities מוחזרים ישירות (עם `@JsonIgnoreProperties` הקיים לשבירת המעגליות); זה ויתור מתועד בסעיף 4.
 - **Frontend:** שכבת services‏ (`LeaveRequestService`, `EmployeeService`), מודלים מטופסים עם enums שמשקפים את הסריאליזציה המספרית של ה‑backend, Reactive Form, ו‑`takeUntilDestroyed` לכל subscription — בלי memory leaks ובלי `any`.
 
 ## 2. הבאג ביתרת החופשה
