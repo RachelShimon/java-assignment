@@ -1,11 +1,13 @@
 package com.example.leavemanagement;
 
+import com.example.leavemanagement.exception.ConflictException;
 import com.example.leavemanagement.model.Employee;
 import com.example.leavemanagement.model.LeaveRequest;
 import com.example.leavemanagement.model.LeaveStatus;
 import com.example.leavemanagement.model.LeaveType;
 import com.example.leavemanagement.repository.EmployeeRepository;
 import com.example.leavemanagement.repository.LeaveRequestRepository;
+import com.example.leavemanagement.service.LeaveRequestService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -19,6 +21,12 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.LocalDate;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -52,6 +60,9 @@ class LeaveRequestsTests {
     @Autowired
     private LeaveRequestRepository leaveRequests;
 
+    @Autowired
+    private LeaveRequestService service;
+
     // --- helpers ---
 
     private Employee employeeWithQuota(int quota) {
@@ -61,15 +72,19 @@ class LeaveRequestsTests {
         return employees.save(emp);
     }
 
-    private void approvedVacation(Employee emp, LocalDate start, int days) {
+    private LeaveRequest vacation(Employee emp, LocalDate start, int days, LeaveStatus status) {
         LeaveRequest r = new LeaveRequest();
         r.setEmployeeId(emp.getId());
         r.setType(LeaveType.VACATION);
         r.setStartDate(start);
         r.setEndDate(start.plusDays(days - 1));
         r.setDays(days);
-        r.setStatus(LeaveStatus.APPROVED);
-        leaveRequests.save(r);
+        r.setStatus(status);
+        return leaveRequests.save(r);
+    }
+
+    private void approvedVacation(Employee emp, LocalDate start, int days) {
+        vacation(emp, start, days, LeaveStatus.APPROVED);
     }
 
     private String createBody(Long employeeId, LeaveType type, String start, String end) {
@@ -169,6 +184,100 @@ class LeaveRequestsTests {
                 {"employeeId": %d, "startDate": "2026-03-01", "endDate": "2026-03-03"}
                 """.formatted(emp.getId()))
                 .andExpect(status().isBadRequest());
+    }
+
+    // --- approve ---
+
+    @Test
+    void approve_PendingRequest_Succeeds() throws Exception {
+        Employee emp = employeeWithQuota(20);
+        LeaveRequest r = vacation(emp, LocalDate.of(2026, 4, 1), 3, LeaveStatus.PENDING);
+
+        mvc.perform(post("/api/leave-requests/{id}/approve", r.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value(LeaveStatus.APPROVED.ordinal()));
+
+        assertEquals(LeaveStatus.APPROVED, leaveRequests.findById(r.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void approve_AlreadyApproved_Returns409() throws Exception {
+        Employee emp = employeeWithQuota(20);
+        LeaveRequest r = vacation(emp, LocalDate.of(2026, 4, 1), 3, LeaveStatus.APPROVED);
+
+        mvc.perform(post("/api/leave-requests/{id}/approve", r.getId()))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void approve_RejectedRequest_Returns409() throws Exception {
+        Employee emp = employeeWithQuota(20);
+        LeaveRequest r = vacation(emp, LocalDate.of(2026, 4, 1), 3, LeaveStatus.REJECTED);
+
+        mvc.perform(post("/api/leave-requests/{id}/approve", r.getId()))
+                .andExpect(status().isConflict());
+
+        assertEquals(LeaveStatus.REJECTED, leaveRequests.findById(r.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void approve_UnknownId_Returns404() throws Exception {
+        mvc.perform(post("/api/leave-requests/{id}/approve", 999999L))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void approve_ExceedingQuota_Returns409AndStaysPending() throws Exception {
+        Employee emp = employeeWithQuota(20);
+        approvedVacation(emp, LocalDate.of(2026, 1, 5), 18); // 18 of 20 used
+        LeaveRequest r = vacation(emp, LocalDate.of(2026, 6, 1), 5, LeaveStatus.PENDING);
+
+        mvc.perform(post("/api/leave-requests/{id}/approve", r.getId()))
+                .andExpect(status().isConflict());
+
+        assertEquals(LeaveStatus.PENDING, leaveRequests.findById(r.getId()).orElseThrow().getStatus());
+    }
+
+    // Two pending requests that each fit the quota alone but not together are
+    // approved concurrently; row locks must allow exactly one to win.
+    @Test
+    void approve_ConcurrentApprovals_CannotJointlyExceedQuota() throws Exception {
+        Employee emp = employeeWithQuota(10);
+        LeaveRequest r1 = vacation(emp, LocalDate.of(2026, 3, 1), 6, LeaveStatus.PENDING);
+        LeaveRequest r2 = vacation(emp, LocalDate.of(2026, 5, 1), 6, LeaveStatus.PENDING);
+
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        Callable<Boolean> approve1 = () -> tryApprove(r1.getId(), barrier);
+        Callable<Boolean> approve2 = () -> tryApprove(r2.getId(), barrier);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Boolean>> results = pool.invokeAll(List.of(approve1, approve2));
+            long successes = 0;
+            for (Future<Boolean> f : results) {
+                if (f.get()) successes++;
+            }
+            assertEquals(1, successes, "exactly one of the two concurrent approvals must win");
+        } finally {
+            pool.shutdown();
+        }
+
+        int approvedDays = leaveRequests
+                .findByEmployeeIdAndTypeAndStatus(emp.getId(), LeaveType.VACATION, LeaveStatus.APPROVED)
+                .stream()
+                .mapToInt(LeaveRequest::getDays)
+                .sum();
+        assertEquals(6, approvedDays, "approved days must not exceed the quota");
+    }
+
+    private boolean tryApprove(Long requestId, CyclicBarrier barrier) throws Exception {
+        barrier.await();
+        try {
+            service.approve(requestId);
+            return true;
+        } catch (ConflictException e) {
+            return false;
+        }
     }
 
     // --- search ---

@@ -2,6 +2,7 @@ package com.example.leavemanagement.service;
 
 import com.example.leavemanagement.dto.CreateLeaveRequestDto;
 import com.example.leavemanagement.exception.BadRequestException;
+import com.example.leavemanagement.exception.ConflictException;
 import com.example.leavemanagement.exception.NotFoundException;
 import com.example.leavemanagement.model.Employee;
 import com.example.leavemanagement.model.LeaveRequest;
@@ -44,7 +45,8 @@ public class LeaveRequestService {
             throw new BadRequestException("End date must not be before start date");
         }
 
-        Employee employee = employeeRepository.findById(dto.getEmployeeId())
+        // Row lock keeps the balance check consistent under concurrent requests.
+        Employee employee = employeeRepository.findByIdForUpdate(dto.getEmployeeId())
                 .orElseThrow(() -> new NotFoundException("Employee not found"));
 
         int days = (int) ChronoUnit.DAYS.between(dto.getStartDate(), dto.getEndDate()) + 1;
@@ -63,6 +65,33 @@ public class LeaveRequestService {
         request.setStatus(LeaveStatus.PENDING);
 
         return leaveRequestRepository.save(request);
+    }
+
+    @Transactional
+    public LeaveRequest approve(Long id) {
+        // Lock the request row: a concurrent approve of the same request waits here
+        // and then fails the PENDING check instead of double-approving.
+        LeaveRequest request = leaveRequestRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new NotFoundException("Leave request not found"));
+
+        if (request.getStatus() != LeaveStatus.PENDING) {
+            throw new ConflictException("Request is already " + request.getStatus().name().toLowerCase());
+        }
+
+        if (request.getType() == LeaveType.VACATION) {
+            // Lock the employee row: concurrent approvals for the same employee are
+            // serialized, so the second one sees the first one's days and cannot
+            // jointly exceed the quota.
+            Employee employee = employeeRepository.findByIdForUpdate(request.getEmployeeId())
+                    .orElseThrow(() -> new NotFoundException("Employee not found"));
+
+            if (usedVacationDays(employee.getId()) + request.getDays() > employee.getAnnualQuota()) {
+                throw new ConflictException("Approving would exceed the annual vacation quota");
+            }
+        }
+
+        request.setStatus(LeaveStatus.APPROVED);
+        return request;
     }
 
     private int usedVacationDays(Long employeeId) {

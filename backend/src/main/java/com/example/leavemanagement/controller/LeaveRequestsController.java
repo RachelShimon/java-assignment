@@ -37,4 +37,10 @@ public class LeaveRequestsController {
     public ResponseEntity<LeaveRequest> create(@Valid @RequestBody CreateLeaveRequestDto dto) {
         return ResponseEntity.ok(service.create(dto));
     }
+
+    // POST /api/leave-requests/{id}/approve
+    @PostMapping("/{id}/approve")
+    public ResponseEntity<LeaveRequest> approve(@PathVariable Long id) {
+        return ResponseEntity.ok(service.approve(id));
+    }
 }
