@@ -7,8 +7,6 @@ import com.example.leavemanagement.model.LeaveStatus;
 import com.example.leavemanagement.model.LeaveType;
 import com.example.leavemanagement.repository.EmployeeRepository;
 import com.example.leavemanagement.repository.LeaveRequestRepository;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,9 +21,6 @@ public class LeaveRequestsController {
 
     private final EmployeeRepository employeeRepository;
     private final LeaveRequestRepository leaveRequestRepository;
-
-    @PersistenceContext
-    private EntityManager entityManager;
 
     public LeaveRequestsController(EmployeeRepository employeeRepository,
                                    LeaveRequestRepository leaveRequestRepository) {
@@ -46,16 +41,7 @@ public class LeaveRequestsController {
     // Lets the UI quickly find requests by employee name.
     @GetMapping("/search")
     public ResponseEntity<List<LeaveRequest>> search(@RequestParam String name) {
-        // Build a quick query to filter by the employee name.
-        String sql = "SELECT * FROM leave_requests WHERE employee_id IN " +
-                "(SELECT id FROM employees WHERE name LIKE '%" + name + "%')";
-
-        @SuppressWarnings("unchecked")
-        List<LeaveRequest> results = entityManager
-                .createNativeQuery(sql, LeaveRequest.class)
-                .getResultList();
-
-        return ResponseEntity.ok(results);
+        return ResponseEntity.ok(leaveRequestRepository.findByEmployee_NameContainingIgnoreCase(name));
     }
 
     // POST /api/leave-requests

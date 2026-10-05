@@ -21,7 +21,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.time.LocalDate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // Runs against a real, throwaway PostgreSQL started by Testcontainers.
@@ -146,5 +148,30 @@ class LeaveRequestsTests {
     void create_UnknownEmployee_Returns404() throws Exception {
         postCreate(createBody(999999L, LeaveType.VACATION, "2026-03-01", "2026-03-03"))
                 .andExpect(status().isNotFound());
+    }
+
+    // --- search ---
+
+    @Test
+    void search_MatchesByPartialNameCaseInsensitive() throws Exception {
+        Employee emp = new Employee();
+        emp.setName("Zelda Searchable");
+        emp.setAnnualQuota(20);
+        employees.save(emp);
+        approvedVacation(emp, LocalDate.of(2026, 2, 2), 3);
+
+        mvc.perform(get("/api/leave-requests/search").param("name", "zelda sea"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].employee.name").value("Zelda Searchable"));
+    }
+
+    @Test
+    void search_SqlInjectionPayload_ReturnsNoRowsInsteadOfLeakingAll() throws Exception {
+        Employee emp = employeeWithQuota(20);
+        approvedVacation(emp, LocalDate.of(2026, 2, 2), 3);
+
+        mvc.perform(get("/api/leave-requests/search").param("name", "' OR '1'='1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
     }
 }
